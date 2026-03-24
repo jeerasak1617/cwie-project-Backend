@@ -608,3 +608,19 @@ async def list_off_site_requests(
             for r in records
         ]
     }
+
+@router.put("/internship-info", summary="อัปเดตข้อมูลฝึกงาน")
+async def update_internship_info(
+    advisor_user_id: int = None, supervisor_name: str = None, company_name: str = None,
+    job_description: str = None, study_program_type: str = None,
+    user: User = Depends(require_roles(["student"])), db: Session = Depends(get_db),
+):
+    from app.models.user import Internship
+    internship = db.query(Internship).filter(Internship.user_std_id == user.id).order_by(Internship.id.desc()).first()
+    if not internship:
+        raise HTTPException(404, "ไม่พบข้อมูลการฝึกงาน")
+    if advisor_user_id: user.advisor_user_id = advisor_user_id
+    if study_program_type: user.study_program_type = study_program_type
+    if job_description: internship.job_title = job_description
+    db.commit()
+    return {"success": True, "message": "อัปเดตข้อมูลฝึกงานสำเร็จ"}
