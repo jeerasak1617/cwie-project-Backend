@@ -158,6 +158,18 @@ async def list_skill_types(db: Session = Depends(get_db)):
     items = db.query(SkillType).order_by(SkillType.sort_order).all()
     return [{"id": s.id, "code": s.code, "name_th": s.name_th, "icon": s.icon} for s in items]
 
+@router.get("/departments", summary="ดึงสาขาวิชาทั้งหมด")
+async def get_all_departments(db: Session = Depends(get_db)):
+    from app.models.user import Department
+    depts = db.query(Department).all()
+    return [{"id": d.id, "name_th": d.name_th, "name_en": getattr(d, 'name_en', None), "faculty_id": getattr(d, 'faculty_id', None)} for d in depts]
+
+
+@router.get("/advisors", summary="ดึงรายชื่ออาจารย์ทั้งหมด")
+async def get_all_advisors(db: Session = Depends(get_db)):
+    from app.models.user import User, UserRole, UserStatus
+    advisors = db.query(User).filter(User.sys_role == UserRole.advisor, User.status == UserStatus.active, User.deleted_at.is_(None)).all()
+    return [{"id": a.id, "prefix_th": a.prefix_th, "first_name_th": a.first_name_th, "last_name_th": a.last_name_th, "department_id": a.department_id, "email": a.email} for a in advisors]
 
 @router.get("/leave-types", summary="ประเภทการลา")
 async def list_leave_types(db: Session = Depends(get_db)):
@@ -166,3 +178,4 @@ async def list_leave_types(db: Session = Depends(get_db)):
         {"id": l.id, "code": l.code, "name_th": l.name_th, "max_days": l.max_days_per_semester}
         for l in items
     ]
+

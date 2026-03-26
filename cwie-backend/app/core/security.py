@@ -38,6 +38,13 @@ def verify_token(token: str) -> Optional[dict]:
         return None
 
 
+def decode_token(token: str) -> dict:
+    payload = verify_token(token)
+    if not payload:
+        raise HTTPException(401, "Token invalid or expired")
+    return payload
+
+
 def create_registration_token(line_user_id: str) -> str:
     return create_access_token(
         data={"line_user_id": line_user_id, "type": "registration"},

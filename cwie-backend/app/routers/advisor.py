@@ -574,7 +574,7 @@ async def get_advisor_profile(db: Session = Depends(get_db), user: User = Depend
         "phone": user.phone,
         "mobile": user.mobile,
         "department_id": user.department_id,
-        "academic_position": user.academic_position,
+        
         "photo_url": user.photo_url,
     }
 
@@ -584,13 +584,13 @@ async def update_advisor_profile(
     phone: Optional[str] = None,
     mobile: Optional[str] = None,
     email: Optional[str] = None,
-    academic_position: Optional[str] = None,
+    
     db: Session = Depends(get_db),
     user: User = Depends(advisor_only),
 ):
     if phone is not None: user.phone = phone
     if mobile is not None: user.mobile = mobile
     if email is not None: user.email = email
-    if academic_position is not None: user.academic_position = academic_position
+    
     db.commit()
     return {"success": True, "message": "อัปเดตโปรไฟล์สำเร็จ"}
