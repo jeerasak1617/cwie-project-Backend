@@ -574,7 +574,6 @@ async def get_advisor_profile(db: Session = Depends(get_db), user: User = Depend
         "phone": user.phone,
         "mobile": user.mobile,
         "department_id": user.department_id,
-        
         "photo_url": user.photo_url,
     }
 
@@ -584,13 +583,72 @@ async def update_advisor_profile(
     phone: Optional[str] = None,
     mobile: Optional[str] = None,
     email: Optional[str] = None,
-    
     db: Session = Depends(get_db),
     user: User = Depends(advisor_only),
 ):
     if phone is not None: user.phone = phone
     if mobile is not None: user.mobile = mobile
     if email is not None: user.email = email
-    
     db.commit()
     return {"success": True, "message": "อัปเดตโปรไฟล์สำเร็จ"}
+
+@router.get("/unassigned-students", summary="ดูนักศึกษาที่ยังไม่มีอาจารย์ดูแล")
+async def list_unassigned_students(db: Session = Depends(get_db), user: User = Depends(advisor_only)):
+    """ดึงรายชื่อนักศึกษาที่มี internship แต่ยังไม่มีอาจารย์ (user_adv_id is NULL)"""
+    internships = db.query(Internship).filter(
+        Internship.user_adv_id.is_(None)
+    ).all()
+
+    result = []
+    for i in internships:
+        student = db.query(User).filter(User.id == i.user_std_id).first()
+        if not student:
+            continue
+        result.append({
+            "internship_id": i.id,
+            "student_id": student.id,
+            "student_code": student.student_code,
+            "full_name": f"{student.first_name_th or ''} {student.last_name_th or ''}".strip(),
+            "email": student.email,
+            "department_id": student.department_id,
+            "company_id": i.company_id,
+            "start_date": i.start_date.isoformat() if i.start_date else None,
+        })
+    return {"students": result}
+
+
+@router.post("/assign-student", summary="เลือกนักศึกษาเข้ามาดูแล")
+async def assign_student(
+    internship_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(advisor_only),
+):
+    """อาจารย์เลือก assign ตัวเองเป็นที่ปรึกษาของ internship นี้"""
+    internship = db.query(Internship).filter(Internship.id == internship_id).first()
+    if not internship:
+        raise HTTPException(404, "ไม่พบข้อมูลการฝึกงาน")
+
+    if internship.user_adv_id and internship.user_adv_id != user.id:
+        raise HTTPException(409, "นักศึกษาคนนี้มีอาจารย์ดูแลอยู่แล้ว")
+
+    internship.user_adv_id = user.id
+    db.commit()
+    return {"success": True, "message": "เพิ่มนักศึกษาในรายชื่อที่ดูแลสำเร็จ"}
+
+
+@router.post("/unassign-student", summary="ถอนนักศึกษาออกจากรายชื่อที่ดูแล")
+async def unassign_student(
+    internship_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(advisor_only),
+):
+    """อาจารย์ถอน assign ตัวเองออกจาก internship"""
+    internship = db.query(Internship).filter(
+        Internship.id == internship_id, Internship.user_adv_id == user.id
+    ).first()
+    if not internship:
+        raise HTTPException(404, "ไม่พบข้อมูลหรือไม่ใช่นักศึกษาที่ดูแล")
+
+    internship.user_adv_id = None
+    db.commit()
+    return {"success": True, "message": "ถอนนักศึกษาออกจากรายชื่อสำเร็จ"}

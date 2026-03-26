@@ -39,11 +39,11 @@ def verify_token(token: str) -> Optional[dict]:
 
 
 def decode_token(token: str) -> dict:
+    """ถอดรหัส token — ถ้าไม่ถูกต้องจะ raise HTTPException"""
     payload = verify_token(token)
     if not payload:
-        raise HTTPException(401, "Token invalid or expired")
+        raise HTTPException(401, "Token ไม่ถูกต้องหรือหมดอายุ")
     return payload
-
 
 def create_registration_token(line_user_id: str) -> str:
     return create_access_token(
