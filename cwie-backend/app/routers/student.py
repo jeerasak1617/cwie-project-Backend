@@ -27,12 +27,17 @@ async def get_profile(db: Session = Depends(get_db), user: User = Depends(studen
         "prefix_th": user.prefix_th,
         "first_name_th": user.first_name_th,
         "last_name_th": user.last_name_th,
+        "first_name_en": user.first_name_en,
+        "last_name_en": user.last_name_en,
         "email": user.email,
         "phone": user.phone,
         "mobile": user.mobile,
         "gpa": float(user.gpa) if user.gpa else None,
         "department_id": user.department_id,
         "photo_url": user.photo_url,
+        "study_program_type": user.study_program_type.value if user.study_program_type else None,
+        "admission_year": user.admission_year,
+        "permanent_address_id": user.permanent_address_id,
     }
 
 
@@ -41,14 +46,151 @@ async def update_profile(
     phone: Optional[str] = None,
     mobile: Optional[str] = None,
     email: Optional[str] = None,
+    prefix_th: Optional[str] = None,
+    first_name_th: Optional[str] = None,
+    last_name_th: Optional[str] = None,
+    department_id: Optional[int] = None,
+    study_program_type: Optional[str] = None,
     db: Session = Depends(get_db),
     user: User = Depends(student_only),
 ):
     if phone is not None: user.phone = phone
     if mobile is not None: user.mobile = mobile
     if email is not None: user.email = email
+    if prefix_th is not None: user.prefix_th = prefix_th
+    if first_name_th is not None: user.first_name_th = first_name_th
+    if last_name_th is not None: user.last_name_th = last_name_th
+    if department_id is not None: user.department_id = department_id
+    if study_program_type is not None:
+        mapping = {"ภาคในเวลาราชการ": "regular", "ภาคนอกเวลาราชการ": "part_time"}
+        user.study_program_type = mapping.get(study_program_type, study_program_type)
     db.commit()
     return {"success": True, "message": "อัปเดตข้อมูลสำเร็จ"}
+
+
+@router.post("/profile/save-address", summary="บันทึกที่อยู่ภูมิลำเนา")
+async def save_address(
+    data: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(student_only),
+):
+    """บันทึกที่อยู่ลงตาราง addresses + อัปเดต user.permanent_address_id"""
+    from app.models.user import Address
+
+    # ถ้ามี permanent_address_id → อัปเดต, ถ้าไม่มี → สร้างใหม่
+    addr = None
+    if user.permanent_address_id:
+        addr = db.query(Address).filter(Address.id == user.permanent_address_id).first()
+
+    if addr:
+        addr.building_no = data.get("houseNo", "")
+        addr.road = data.get("road", "")
+        addr.soi = data.get("soi", "")
+        addr.province_id = int(data["province_id"]) if data.get("province_id") else None
+        addr.district_id = int(data["district_id"]) if data.get("district_id") else None
+        addr.subdistrict_id = int(data["subdistrict_id"]) if data.get("subdistrict_id") else None
+        addr.postal_code = data.get("postalCode", "")
+    else:
+        addr = Address(
+            address_type="permanent",
+            building_no=data.get("houseNo", ""),
+            road=data.get("road", ""),
+            soi=data.get("soi", ""),
+            province_id=int(data["province_id"]) if data.get("province_id") else None,
+            district_id=int(data["district_id"]) if data.get("district_id") else None,
+            subdistrict_id=int(data["subdistrict_id"]) if data.get("subdistrict_id") else None,
+            postal_code=data.get("postalCode", ""),
+        )
+        db.add(addr)
+        db.flush()
+        user.permanent_address_id = addr.id
+
+    # อัปเดตเบอร์โทร
+    if data.get("phone"):
+        user.phone = data["phone"]
+
+    db.commit()
+    return {"success": True, "message": "บันทึกที่อยู่สำเร็จ", "address_id": addr.id}
+
+
+@router.get("/profile/address", summary="ดูที่อยู่ภูมิลำเนา")
+async def get_address(db: Session = Depends(get_db), user: User = Depends(student_only)):
+    from app.models.user import Address
+    if not user.permanent_address_id:
+        return {"address": None}
+    addr = db.query(Address).filter(Address.id == user.permanent_address_id).first()
+    if not addr:
+        return {"address": None}
+    return {
+        "address": {
+            "houseNo": addr.building_no or "",
+            "road": addr.road or "",
+            "soi": addr.soi or "",
+            "province_id": addr.province_id,
+            "district_id": addr.district_id,
+            "subdistrict_id": addr.subdistrict_id,
+            "postalCode": addr.postal_code or "",
+        }
+    }
+
+
+@router.post("/profile/save-family", summary="บันทึกข้อมูลผู้ปกครอง")
+async def save_family(
+    data: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(student_only),
+):
+    """บันทึกข้อมูลผู้ปกครอง/บิดา/มารดา ลงตาราง user_families"""
+    from app.models.user import UserFamily
+
+    families = data.get("families", [])
+    for fam in families:
+        relation = fam.get("relation_type", "")
+        if not relation:
+            continue
+
+        # หาข้อมูลเดิม
+        existing = db.query(UserFamily).filter(
+            UserFamily.user_id == user.id,
+            UserFamily.relation_type == relation,
+        ).first()
+
+        if existing:
+            existing.first_name = fam.get("first_name", "")
+            existing.last_name = fam.get("last_name", "")
+            existing.occupation = fam.get("occupation", "")
+            existing.phone = fam.get("phone", "")
+        else:
+            new_fam = UserFamily(
+                user_id=user.id,
+                relation_type=relation,
+                first_name=fam.get("first_name", ""),
+                last_name=fam.get("last_name", ""),
+                occupation=fam.get("occupation", ""),
+                phone=fam.get("phone", ""),
+            )
+            db.add(new_fam)
+
+    db.commit()
+    return {"success": True, "message": "บันทึกข้อมูลผู้ปกครองสำเร็จ"}
+
+
+@router.get("/profile/family", summary="ดูข้อมูลผู้ปกครอง")
+async def get_family(db: Session = Depends(get_db), user: User = Depends(student_only)):
+    from app.models.user import UserFamily
+    families = db.query(UserFamily).filter(UserFamily.user_id == user.id).all()
+    return {
+        "families": [
+            {
+                "relation_type": f.relation_type,
+                "first_name": f.first_name or "",
+                "last_name": f.last_name or "",
+                "occupation": f.occupation or "",
+                "phone": f.phone or "",
+            }
+            for f in families
+        ]
+    }
 
 
 # ==================== การฝึกงาน ====================
@@ -58,6 +200,62 @@ async def get_internship(db: Session = Depends(get_db), user: User = Depends(stu
     internship = db.query(Internship).filter(Internship.user_std_id == user.id).order_by(Internship.id.desc()).first()
     if not internship:
         return {"message": "ยังไม่มีข้อมูลการฝึกงาน"}
+
+    # ดึงข้อมูลบริษัท
+    company_data = None
+    if internship.company_id:
+        from app.models.user import Company
+        company = db.query(Company).filter(Company.id == internship.company_id).first()
+        if company:
+            # ดึงที่อยู่บริษัท
+            company_address = ""
+            if company.address_id:
+                from app.models.user import Address, Subdistrict, District, Province
+                addr = db.query(Address).filter(Address.id == company.address_id).first()
+                if addr:
+                    parts = [addr.building_no, addr.road, addr.soi]
+                    if addr.subdistrict_id:
+                        sub = db.query(Subdistrict).filter(Subdistrict.id == addr.subdistrict_id).first()
+                        if sub: parts.append(f"ต.{sub.name_th}")
+                    if addr.district_id:
+                        dist = db.query(District).filter(District.id == addr.district_id).first()
+                        if dist: parts.append(f"อ.{dist.name_th}")
+                    if addr.province_id:
+                        prov = db.query(Province).filter(Province.id == addr.province_id).first()
+                        if prov: parts.append(f"จ.{prov.name_th}")
+                    if addr.postal_code: parts.append(addr.postal_code)
+                    company_address = " ".join(p for p in parts if p)
+            company_data = {
+                "id": company.id,
+                "name_th": company.name_th,
+                "name_en": company.name_en,
+                "address": company_address,
+                "phone": company.phone,
+                "email": company.email,
+            }
+
+    # ดึงข้อมูล supervisor (พี่เลี้ยง)
+    supervisor_data = None
+    if internship.user_sup_id:
+        sup = db.query(User).filter(User.id == internship.user_sup_id).first()
+        if sup:
+            supervisor_data = {
+                "id": sup.id,
+                "full_name": f"{sup.prefix_th or ''} {sup.first_name_th or ''} {sup.last_name_th or ''}".strip(),
+                "position": sup.position,
+                "phone": sup.phone,
+            }
+
+    # ดึงข้อมูล advisor (อาจารย์นิเทศก์)
+    advisor_data = None
+    if internship.user_adv_id:
+        adv = db.query(User).filter(User.id == internship.user_adv_id).first()
+        if adv:
+            advisor_data = {
+                "id": adv.id,
+                "full_name": f"{adv.prefix_th or ''} {adv.first_name_th or ''} {adv.last_name_th or ''}".strip(),
+            }
+
     return {
         "id": internship.id,
         "internship_code": internship.internship_code,
@@ -67,7 +265,12 @@ async def get_internship(db: Session = Depends(get_db), user: User = Depends(stu
         "required_hours": internship.required_hours,
         "completed_hours": float(internship.completed_hours or 0),
         "job_title": internship.job_title,
+        "job_description": internship.job_description,
+        "department": internship.department,
         "status_id": internship.status_id,
+        "company": company_data,
+        "supervisor": supervisor_data,
+        "advisor": advisor_data,
     }
 
 
@@ -626,3 +829,52 @@ async def update_internship_info(
     if job_description: internship.job_title = job_description
     db.commit()
     return {"success": True, "message": "อัปเดตข้อมูลฝึกงานสำเร็จ"}
+
+
+# ==================== สร้างข้อมูลฝึกงานใหม่ ====================
+
+@router.post("/internship", summary="สร้างข้อมูลการฝึกงานใหม่")
+async def create_internship(
+    company_id: int,
+    semester_id: int,
+    start_date: str,
+    end_date: str,
+    job_title: Optional[str] = None,
+    required_hours: int = 560,
+    db: Session = Depends(get_db),
+    user: User = Depends(student_only),
+):
+    """สร้างข้อมูลการฝึกงานใหม่สำหรับนักศึกษา"""
+    # เช็คว่ามี internship อยู่แล้วในภาคเรียนนี้ไหม
+    existing = db.query(Internship).filter(
+        Internship.user_std_id == user.id,
+        Internship.semester_id == semester_id,
+    ).first()
+    if existing:
+        raise HTTPException(409, "มีข้อมูลฝึกงานในภาคเรียนนี้แล้ว")
+
+    # สร้าง internship code อัตโนมัติ
+    import random
+    year = date.today().year
+    code = f"CWIE-{year}-{random.randint(1000, 9999)}"
+
+    internship = Internship(
+        internship_code=code,
+        user_std_id=user.id,
+        company_id=company_id,
+        semester_id=semester_id,
+        start_date=date.fromisoformat(start_date),
+        end_date=date.fromisoformat(end_date),
+        required_hours=required_hours,
+        completed_hours=0,
+        job_title=job_title,
+    )
+    db.add(internship)
+    db.commit()
+    db.refresh(internship)
+    return {
+        "success": True,
+        "id": internship.id,
+        "internship_code": internship.internship_code,
+        "message": "สร้างข้อมูลการฝึกงานสำเร็จ",
+    }

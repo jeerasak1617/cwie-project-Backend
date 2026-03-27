@@ -609,3 +609,75 @@ async def review_experience(
     exp.supervisor_reviewed_at = datetime.utcnow()
     db.commit()
     return {"success": True, "message": "ตรวจประสบการณ์สำเร็จ"}
+
+# ==================== เพิ่มนักศึกษาที่ดูแล (ยึดจากบริษัทเดียวกัน) ====================
+# เพิ่มโค้ดนี้ต่อท้ายไฟล์ supervisor.py
+
+@router.get("/unassigned-students", summary="ดูนักศึกษาที่ฝึกบริษัทเดียวกันแต่ยังไม่มีพี่เลี้ยง")
+async def list_unassigned_students(db: Session = Depends(get_db), user: User = Depends(supervisor_only)):
+    """ดึงนักศึกษาที่ฝึกในบริษัทเดียวกับ supervisor แต่ยังไม่มีพี่เลี้ยง (user_sup_id is NULL)"""
+    # หา company_id ของ supervisor
+    company_id = user.company_id
+
+    q = db.query(Internship).filter(Internship.user_sup_id.is_(None))
+    # ถ้า supervisor มี company_id ให้กรองเฉพาะบริษัทเดียวกัน
+    if company_id:
+        q = q.filter(Internship.company_id == company_id)
+
+    internships = q.all()
+    result = []
+    for i in internships:
+        student = db.query(User).filter(User.id == i.user_std_id).first()
+        if not student:
+            continue
+        result.append({
+            "internship_id": i.id,
+            "student_id": student.id,
+            "student_code": student.student_code,
+            "full_name": f"{student.first_name_th or ''} {student.last_name_th or ''}".strip(),
+            "email": student.email,
+            "department_id": student.department_id,
+            "company_id": i.company_id,
+            "start_date": i.start_date.isoformat() if i.start_date else None,
+        })
+    return {"students": result}
+
+
+@router.post("/assign-student", summary="เลือกนักศึกษาเข้ามาดูแล")
+async def assign_student(
+    internship_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(supervisor_only),
+):
+    """Supervisor เลือก assign ตัวเองเป็นพี่เลี้ยงของ internship นี้"""
+    internship = db.query(Internship).filter(Internship.id == internship_id).first()
+    if not internship:
+        raise HTTPException(404, "ไม่พบข้อมูลการฝึกงาน")
+
+    # เช็คว่าบริษัทตรงกันไหม
+    if user.company_id and internship.company_id and user.company_id != internship.company_id:
+        raise HTTPException(403, "นักศึกษาคนนี้ไม่ได้ฝึกในบริษัทของคุณ")
+
+    if internship.user_sup_id and internship.user_sup_id != user.id:
+        raise HTTPException(409, "นักศึกษาคนนี้มีพี่เลี้ยงดูแลอยู่แล้ว")
+
+    internship.user_sup_id = user.id
+    db.commit()
+    return {"success": True, "message": "เพิ่มนักศึกษาในรายชื่อที่ดูแลสำเร็จ"}
+
+
+@router.post("/unassign-student", summary="ถอนนักศึกษาออกจากรายชื่อ")
+async def unassign_student(
+    internship_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(supervisor_only),
+):
+    internship = db.query(Internship).filter(
+        Internship.id == internship_id, Internship.user_sup_id == user.id
+    ).first()
+    if not internship:
+        raise HTTPException(404, "ไม่พบข้อมูลหรือไม่ใช่นักศึกษาที่ดูแล")
+
+    internship.user_sup_id = None
+    db.commit()
+    return {"success": True, "message": "ถอนนักศึกษาออกจากรายชื่อสำเร็จ"}
