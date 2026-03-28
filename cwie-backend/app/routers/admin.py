@@ -176,3 +176,111 @@ async def delete_user(user_id: int, db: Session = Depends(get_db), admin: User =
     user.deleted_at = datetime.utcnow()
     db.commit()
     return {"success": True, "message": "ลบผู้ใช้งานสำเร็จ"}
+
+# ==================== จัดการภาคเรียน ====================
+
+@router.get("/semesters", summary="ดูภาคเรียนทั้งหมด")
+async def list_semesters(db: Session = Depends(get_db), admin: User = Depends(admin_only)):
+    from app.models.user import Semester
+    semesters = db.query(Semester).order_by(Semester.year.desc(), Semester.term.desc()).all()
+    return {
+        "semesters": [
+            {
+                "id": s.id,
+                "term": s.term,
+                "year": s.year,
+                "start_date": s.start_date.isoformat() if s.start_date else None,
+                "end_date": s.end_date.isoformat() if s.end_date else None,
+                "internship_start": s.internship_start.isoformat() if s.internship_start else None,
+                "internship_end": s.internship_end.isoformat() if s.internship_end else None,
+                "is_current": s.is_current,
+            }
+            for s in semesters
+        ],
+    }
+
+
+@router.post("/semesters", summary="สร้างภาคเรียนใหม่")
+async def create_semester(
+    data: dict,
+    db: Session = Depends(get_db),
+    admin: User = Depends(admin_only),
+):
+    from app.models.user import Semester
+    from datetime import date as dt_date
+
+    term = data.get("term")
+    year = data.get("year")
+    if not term or not year:
+        raise HTTPException(400, "กรุณาระบุ term และ year")
+
+    existing = db.query(Semester).filter(Semester.term == term, Semester.year == year).first()
+    if existing:
+        raise HTTPException(400, f"ภาคเรียน {term}/{year} มีอยู่แล้ว")
+
+    sem = Semester(
+        term=int(term),
+        year=int(year),
+        start_date=dt_date.fromisoformat(data["start_date"]) if data.get("start_date") else None,
+        end_date=dt_date.fromisoformat(data["end_date"]) if data.get("end_date") else None,
+        internship_start=dt_date.fromisoformat(data["internship_start"]) if data.get("internship_start") else None,
+        internship_end=dt_date.fromisoformat(data["internship_end"]) if data.get("internship_end") else None,
+        is_current=data.get("is_current", False),
+    )
+
+    # ถ้าตั้ง is_current → ยกเลิก current ตัวอื่นทั้งหมด
+    if sem.is_current:
+        db.query(Semester).filter(Semester.is_current == True).update({"is_current": False})
+
+    db.add(sem)
+    db.commit()
+    db.refresh(sem)
+    return {"success": True, "id": sem.id, "message": f"สร้างภาคเรียน {term}/{year} สำเร็จ"}
+
+
+@router.put("/semesters/{semester_id}", summary="แก้ไขภาคเรียน")
+async def update_semester(
+    semester_id: int,
+    data: dict,
+    db: Session = Depends(get_db),
+    admin: User = Depends(admin_only),
+):
+    from app.models.user import Semester
+    from datetime import date as dt_date
+
+    sem = db.query(Semester).filter(Semester.id == semester_id).first()
+    if not sem:
+        raise HTTPException(404, "ไม่พบภาคเรียน")
+
+    if "term" in data: sem.term = int(data["term"])
+    if "year" in data: sem.year = int(data["year"])
+    if "start_date" in data: sem.start_date = dt_date.fromisoformat(data["start_date"]) if data["start_date"] else None
+    if "end_date" in data: sem.end_date = dt_date.fromisoformat(data["end_date"]) if data["end_date"] else None
+    if "internship_start" in data: sem.internship_start = dt_date.fromisoformat(data["internship_start"]) if data["internship_start"] else None
+    if "internship_end" in data: sem.internship_end = dt_date.fromisoformat(data["internship_end"]) if data["internship_end"] else None
+    if "is_current" in data:
+        if data["is_current"]:
+            db.query(Semester).filter(Semester.is_current == True, Semester.id != semester_id).update({"is_current": False})
+        sem.is_current = data["is_current"]
+
+    db.commit()
+    return {"success": True, "message": "อัปเดตภาคเรียนสำเร็จ"}
+
+
+@router.delete("/semesters/{semester_id}", summary="ลบภาคเรียน")
+async def delete_semester(semester_id: int, db: Session = Depends(get_db), admin: User = Depends(admin_only)):
+    from app.models.user import Semester
+    sem = db.query(Semester).filter(Semester.id == semester_id).first()
+    if not sem:
+        raise HTTPException(404, "ไม่พบภาคเรียน")
+    db.delete(sem)
+    db.commit()
+    return {"success": True, "message": "ลบภาคเรียนสำเร็จ"}
+
+
+@router.put("/internships/update-hours", summary="อัปเดตชั่วโมงฝึกงานทั้งหมดจาก 560 เป็น 450")
+async def update_all_internship_hours(db: Session = Depends(get_db), admin: User = Depends(admin_only)):
+    from app.models.user import Internship
+    count = db.query(Internship).filter(Internship.required_hours == 560).update({"required_hours": 450})
+    db.commit()
+    return {"success": True, "updated_count": count, "message": f"อัปเดต {count} รายการจาก 560 → 450 ชม."}

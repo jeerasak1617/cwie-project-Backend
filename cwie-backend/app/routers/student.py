@@ -51,6 +51,8 @@ async def update_profile(
     last_name_th: Optional[str] = None,
     department_id: Optional[int] = None,
     study_program_type: Optional[str] = None,
+    photo_url: Optional[str] = None,
+    admission_year: Optional[int] = None,
     db: Session = Depends(get_db),
     user: User = Depends(student_only),
 ):
@@ -61,11 +63,28 @@ async def update_profile(
     if first_name_th is not None: user.first_name_th = first_name_th
     if last_name_th is not None: user.last_name_th = last_name_th
     if department_id is not None: user.department_id = department_id
+    if photo_url is not None: user.photo_url = photo_url
+    if admission_year is not None: user.admission_year = admission_year
     if study_program_type is not None:
         mapping = {"ภาคในเวลาราชการ": "regular", "ภาคนอกเวลาราชการ": "part_time"}
         user.study_program_type = mapping.get(study_program_type, study_program_type)
     db.commit()
     return {"success": True, "message": "อัปเดตข้อมูลสำเร็จ"}
+
+
+@router.post("/profile/upload-photo", summary="อัปโหลดรูปโปรไฟล์")
+async def upload_photo(
+    data: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(student_only),
+):
+    """รับรูป base64 ผ่าน JSON body"""
+    photo_url = data.get("photo_url")
+    if not photo_url:
+        raise HTTPException(400, "ไม่มีข้อมูลรูปภาพ")
+    user.photo_url = photo_url
+    db.commit()
+    return {"success": True, "message": "อัปโหลดรูปสำเร็จ"}
 
 
 @router.post("/profile/save-address", summary="บันทึกที่อยู่ภูมิลำเนา")
@@ -256,6 +275,22 @@ async def get_internship(db: Session = Depends(get_db), user: User = Depends(stu
                 "full_name": f"{adv.prefix_th or ''} {adv.first_name_th or ''} {adv.last_name_th or ''}".strip(),
             }
 
+    # ดึงข้อมูล semester
+    semester_data = None
+    if internship.semester_id:
+        from app.models.user import Semester
+        sem = db.query(Semester).filter(Semester.id == internship.semester_id).first()
+        if sem:
+            semester_data = {
+                "id": sem.id,
+                "term": sem.term,
+                "year": sem.year,
+                "start_date": sem.start_date.isoformat() if sem.start_date else None,
+                "end_date": sem.end_date.isoformat() if sem.end_date else None,
+                "internship_start": sem.internship_start.isoformat() if sem.internship_start else None,
+                "internship_end": sem.internship_end.isoformat() if sem.internship_end else None,
+            }
+
     return {
         "id": internship.id,
         "internship_code": internship.internship_code,
@@ -268,6 +303,7 @@ async def get_internship(db: Session = Depends(get_db), user: User = Depends(stu
         "job_description": internship.job_description,
         "department": internship.department,
         "status_id": internship.status_id,
+        "semester": semester_data,
         "company": company_data,
         "supervisor": supervisor_data,
         "advisor": advisor_data,
@@ -840,7 +876,7 @@ async def create_internship(
     start_date: str,
     end_date: str,
     job_title: Optional[str] = None,
-    required_hours: int = 560,
+    required_hours: int = 450,
     db: Session = Depends(get_db),
     user: User = Depends(student_only),
 ):

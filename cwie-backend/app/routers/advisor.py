@@ -99,6 +99,22 @@ async def get_student_detail(internship_id: int, db: Session = Depends(get_db), 
         AttendanceRecord.internship_id == internship_id
     ).count()
 
+    # ดึงชื่อบริษัท
+    company_name = None
+    if internship.company_id:
+        from app.models.user import Company
+        company = db.query(Company).filter(Company.id == internship.company_id).first()
+        if company:
+            company_name = company.name_th or company.name_en
+
+    # ดึง semester
+    semester_label = None
+    if internship.semester_id:
+        from app.models.user import Semester
+        sem = db.query(Semester).filter(Semester.id == internship.semester_id).first()
+        if sem:
+            semester_label = f"เทอม {sem.term}/{sem.year}"
+
     return {
         "internship": {
             "id": internship.id,
@@ -108,7 +124,9 @@ async def get_student_detail(internship_id: int, db: Session = Depends(get_db), 
             "required_hours": internship.required_hours,
             "completed_hours": float(internship.completed_hours or 0),
             "company_id": internship.company_id,
+            "company_name": company_name,
             "job_title": internship.job_title,
+            "semester": semester_label,
         },
         "student": {
             "id": student.id,
@@ -369,6 +387,41 @@ async def list_visit_reports(db: Session = Depends(get_db), user: User = Depends
     }
 
 
+@router.get("/visit-reports/{internship_id}", summary="ดูผลนิเทศของนักศึกษาเฉพาะคน")
+async def get_student_visit_reports(
+    internship_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(advisor_only),
+):
+    internship = db.query(Internship).filter(
+        Internship.id == internship_id, Internship.user_adv_id == user.id
+    ).first()
+    if not internship:
+        raise HTTPException(404, "ไม่พบข้อมูลหรือไม่ใช่นักศึกษาที่ดูแล")
+
+    visits = db.query(SupervisionVisit).filter(
+        SupervisionVisit.internship_id == internship_id,
+        SupervisionVisit.user_adv_id == user.id,
+    ).order_by(SupervisionVisit.visit_number).all()
+
+    return {
+        "reports": [
+            {
+                "id": v.id,
+                "visit_number": v.visit_number,
+                "visit_date": v.visit_date.isoformat() if v.visit_date else None,
+                "work_observed": v.work_observed,
+                "student_performance": v.student_performance,
+                "issues_found": v.issues_found,
+                "solutions_suggested": v.solutions_suggested,
+                "recommendations": v.recommendations,
+                "supervisor_feedback": v.supervisor_feedback,
+            }
+            for v in visits
+        ],
+    }
+
+
 # ==================== ประเมินนักศึกษา ====================
 
 @router.post("/evaluation", summary="ประเมินนักศึกษา (40 คะแนน)")
@@ -446,6 +499,41 @@ async def list_evaluations(db: Session = Depends(get_db), user: User = Depends(a
             for e in evals
         ],
     }
+
+
+@router.get("/evaluation/{internship_id}", summary="ดูคะแนนประเมินทั้งหมดของนักศึกษา (อาจารย์เห็นทั้งหมด)")
+async def get_all_evaluations_for_student(
+    internship_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(advisor_only),
+):
+    """อาจารย์เห็นคะแนนทั้งหมด: ของตัวเอง + ของบริษัท"""
+    internship = db.query(Internship).filter(
+        Internship.id == internship_id, Internship.user_adv_id == user.id
+    ).first()
+    if not internship:
+        raise HTTPException(404, "ไม่พบข้อมูลหรือไม่ใช่นักศึกษาที่ดูแล")
+
+    # ดึงทุก evaluation ของ internship นี้
+    evals = db.query(Evaluation).filter(Evaluation.internship_id == internship_id).all()
+
+    result = {}
+    for e in evals:
+        eval_type = e.evaluation_type.value if e.evaluation_type else "unknown"
+        import json
+        result[eval_type] = {
+            "id": e.id,
+            "evaluation_type": eval_type,
+            "total_score": float(e.total_score) if e.total_score else 0,
+            "max_possible_score": float(e.max_possible_score) if e.max_possible_score else 0,
+            "scores": e.scores if isinstance(e.scores, dict) else (json.loads(e.scores) if isinstance(e.scores, str) else {}),
+            "strengths": e.strengths,
+            "weaknesses": e.weaknesses,
+            "overall_comment": e.overall_comment,
+            "submitted_at": e.submitted_at.isoformat() if e.submitted_at else None,
+        }
+
+    return {"evaluations": result}
 
 
 # ==================== ดูการเข้างาน ====================
@@ -583,72 +671,31 @@ async def update_advisor_profile(
     phone: Optional[str] = None,
     mobile: Optional[str] = None,
     email: Optional[str] = None,
+    department_id: Optional[int] = None,
+    prefix_th: Optional[str] = None,
+    photo_url: Optional[str] = None,
     db: Session = Depends(get_db),
     user: User = Depends(advisor_only),
 ):
     if phone is not None: user.phone = phone
     if mobile is not None: user.mobile = mobile
     if email is not None: user.email = email
+    if department_id is not None: user.department_id = department_id
+    if prefix_th is not None: user.prefix_th = prefix_th
+    if photo_url is not None: user.photo_url = photo_url
     db.commit()
     return {"success": True, "message": "อัปเดตโปรไฟล์สำเร็จ"}
 
-@router.get("/unassigned-students", summary="ดูนักศึกษาที่ยังไม่มีอาจารย์ดูแล")
-async def list_unassigned_students(db: Session = Depends(get_db), user: User = Depends(advisor_only)):
-    """ดึงรายชื่อนักศึกษาที่มี internship แต่ยังไม่มีอาจารย์ (user_adv_id is NULL)"""
-    internships = db.query(Internship).filter(
-        Internship.user_adv_id.is_(None)
-    ).all()
 
-    result = []
-    for i in internships:
-        student = db.query(User).filter(User.id == i.user_std_id).first()
-        if not student:
-            continue
-        result.append({
-            "internship_id": i.id,
-            "student_id": student.id,
-            "student_code": student.student_code,
-            "full_name": f"{student.first_name_th or ''} {student.last_name_th or ''}".strip(),
-            "email": student.email,
-            "department_id": student.department_id,
-            "company_id": i.company_id,
-            "start_date": i.start_date.isoformat() if i.start_date else None,
-        })
-    return {"students": result}
-
-
-@router.post("/assign-student", summary="เลือกนักศึกษาเข้ามาดูแล")
-async def assign_student(
-    internship_id: int,
+@router.post("/profile/upload-photo", summary="อัปโหลดรูปโปรไฟล์อาจารย์")
+async def upload_advisor_photo(
+    data: dict,
     db: Session = Depends(get_db),
     user: User = Depends(advisor_only),
 ):
-    """อาจารย์เลือก assign ตัวเองเป็นที่ปรึกษาของ internship นี้"""
-    internship = db.query(Internship).filter(Internship.id == internship_id).first()
-    if not internship:
-        raise HTTPException(404, "ไม่พบข้อมูลการฝึกงาน")
-
-    if internship.user_adv_id and internship.user_adv_id != user.id:
-        raise HTTPException(409, "นักศึกษาคนนี้มีอาจารย์ดูแลอยู่แล้ว")
-
-    internship.user_adv_id = user.id
+    photo_url = data.get("photo_url")
+    if not photo_url:
+        raise HTTPException(400, "ไม่มีข้อมูลรูปภาพ")
+    user.photo_url = photo_url
     db.commit()
-    return {"success": True, "message": "เพิ่มนักศึกษาในรายชื่อที่ดูแลสำเร็จ"}
-
-
-@router.post("/unassign-student", summary="ถอนนักศึกษาออกจากรายชื่อที่ดูแล")
-async def unassign_student(
-    internship_id: int,
-    db: Session = Depends(get_db),
-    user: User = Depends(advisor_only),
-):
-    """อาจารย์ถอน assign ตัวเองออกจาก internship"""
-    internship = db.query(Internship).filter(
-        Internship.id == internship_id, Internship.user_adv_id == user.id
-    ).first()
-    if not internship:
-        raise HTTPException(404, "ไม่พบข้อมูลหรือไม่ใช่นักศึกษาที่ดูแล")
-
-    internship.user_adv_id = None
-    db.commit()
-    return {"success": True, "message": "ถอนนักศึกษาออกจากรายชื่อสำเร็จ"}
+    return {"success": True, "message": "อัปโหลดรูปสำเร็จ"}
