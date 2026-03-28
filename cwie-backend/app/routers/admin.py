@@ -284,3 +284,164 @@ async def update_all_internship_hours(db: Session = Depends(get_db), admin: User
     count = db.query(Internship).filter(Internship.required_hours == 560).update({"required_hours": 450})
     db.commit()
     return {"success": True, "updated_count": count, "message": f"อัปเดต {count} รายการจาก 560 → 450 ชม."}
+
+# ==================== จัดการบริษัท ====================
+
+@router.get("/companies", summary="ดูบริษัททั้งหมด")
+async def list_companies(
+    search: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    admin: User = Depends(admin_only),
+):
+    from app.models.user import Company
+    q = db.query(Company).filter(Company.is_active == True)
+    if search:
+        q = q.filter(Company.name_th.ilike(f"%{search}%") | Company.name_en.ilike(f"%{search}%"))
+    total = q.count()
+    companies = q.order_by(Company.name_th).offset((page - 1) * per_page).limit(per_page).all()
+    return {
+        "companies": [
+            {"id": c.id, "name_th": c.name_th, "name_en": c.name_en, "phone": c.phone, "email": c.email, "is_active": c.is_active}
+            for c in companies
+        ],
+        "total": total,
+    }
+
+
+@router.post("/companies", summary="เพิ่มบริษัทใหม่")
+async def create_company(data: dict, db: Session = Depends(get_db), admin: User = Depends(admin_only)):
+    from app.models.user import Company
+    company = Company(
+        name_th=data.get("name_th", ""),
+        name_en=data.get("name_en", ""),
+        phone=data.get("phone", ""),
+        email=data.get("email", ""),
+        description=data.get("description", ""),
+    )
+    db.add(company)
+    db.commit()
+    db.refresh(company)
+    return {"success": True, "id": company.id, "message": f"เพิ่มบริษัท '{company.name_th}' สำเร็จ"}
+
+
+@router.put("/companies/{company_id}", summary="แก้ไขบริษัท")
+async def update_company(company_id: int, data: dict, db: Session = Depends(get_db), admin: User = Depends(admin_only)):
+    from app.models.user import Company
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(404, "ไม่พบบริษัท")
+    if "name_th" in data: company.name_th = data["name_th"]
+    if "name_en" in data: company.name_en = data["name_en"]
+    if "phone" in data: company.phone = data["phone"]
+    if "email" in data: company.email = data["email"]
+    if "description" in data: company.description = data["description"]
+    db.commit()
+    return {"success": True, "message": "อัปเดตบริษัทสำเร็จ"}
+
+
+@router.delete("/companies/{company_id}", summary="ลบบริษัท")
+async def delete_company(company_id: int, db: Session = Depends(get_db), admin: User = Depends(admin_only)):
+    from app.models.user import Company
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(404, "ไม่พบบริษัท")
+    company.is_active = False
+    db.commit()
+    return {"success": True, "message": "ลบบริษัทสำเร็จ"}
+
+
+# ==================== Admin ประเมิน (ปฐมนิเทศ + ปัจฉิมนิเทศ) ====================
+
+@router.get("/internships", summary="ดู internship ทั้งหมด")
+async def list_internships(db: Session = Depends(get_db), admin: User = Depends(admin_only)):
+    from app.models.user import Internship, Company
+    internships = db.query(Internship).order_by(Internship.id.desc()).all()
+    result = []
+    for i in internships:
+        student = db.query(User).filter(User.id == i.user_std_id).first()
+        company = db.query(Company).filter(Company.id == i.company_id).first() if i.company_id else None
+        result.append({
+            "id": i.id,
+            "internship_code": i.internship_code,
+            "student_name": f"{student.first_name_th} {student.last_name_th}" if student else "-",
+            "student_code": student.student_code if student else "-",
+            "company_name": company.name_th if company else "-",
+            "start_date": i.start_date.isoformat() if i.start_date else None,
+            "end_date": i.end_date.isoformat() if i.end_date else None,
+            "orientation_attended": i.orientation_attended,
+            "debriefing_attended": i.debriefing_attended,
+        })
+    return {"internships": result}
+
+
+@router.post("/evaluation", summary="Admin ให้คะแนนปฐมนิเทศ/ปัจฉิมนิเทศ")
+async def admin_evaluate(
+    data: dict,
+    db: Session = Depends(get_db),
+    admin: User = Depends(admin_only),
+):
+    from app.models.user import Evaluation, EvaluationType, ApprovalStatus, Internship
+    internship_id = data.get("internship_id")
+    eval_type = data.get("evaluation_type")  # "orientation" or "debriefing"
+    score = data.get("score", 0)
+    comment = data.get("comment", "")
+
+    if eval_type not in ["orientation", "debriefing"]:
+        raise HTTPException(400, "evaluation_type ต้องเป็น orientation หรือ debriefing")
+    if score < 0 or score > 5:
+        raise HTTPException(400, "คะแนนต้องอยู่ระหว่าง 0-5")
+
+    internship = db.query(Internship).filter(Internship.id == internship_id).first()
+    if not internship:
+        raise HTTPException(404, "ไม่พบข้อมูลการฝึกงาน")
+
+    # เช็คว่าประเมินไปแล้วหรือยัง
+    existing = db.query(Evaluation).filter(
+        Evaluation.internship_id == internship_id,
+        Evaluation.evaluation_type == eval_type,
+    ).first()
+
+    if existing:
+        existing.total_score = score
+        existing.overall_comment = comment
+        existing.submitted_at = datetime.utcnow()
+    else:
+        ev = Evaluation(
+            internship_id=internship_id,
+            evaluatee_user_id=internship.user_std_id,
+            evaluator_user_id=admin.id,
+            evaluation_type=eval_type,
+            total_score=score,
+            max_possible_score=5,
+            overall_comment=comment,
+            status=ApprovalStatus.approved,
+            submitted_at=datetime.utcnow(),
+        )
+        db.add(ev)
+
+    # อัปเดต internship
+    if eval_type == "orientation":
+        internship.orientation_attended = score > 0
+    else:
+        internship.debriefing_attended = score > 0
+
+    db.commit()
+    return {"success": True, "message": f"ให้คะแนน{'ปฐมนิเทศ' if eval_type == 'orientation' else 'ปัจฉิมนิเทศ'}สำเร็จ"}
+
+
+@router.get("/evaluation/{internship_id}", summary="ดูคะแนน Admin ที่ให้ไว้")
+async def get_admin_evaluations(internship_id: int, db: Session = Depends(get_db), admin: User = Depends(admin_only)):
+    from app.models.user import Evaluation
+    evals = db.query(Evaluation).filter(
+        Evaluation.internship_id == internship_id,
+        Evaluation.evaluation_type.in_(["orientation", "debriefing"]),
+    ).all()
+    result = {}
+    for e in evals:
+        result[e.evaluation_type.value] = {
+            "score": float(e.total_score) if e.total_score else 0,
+            "comment": e.overall_comment,
+        }
+    return {"evaluations": result}

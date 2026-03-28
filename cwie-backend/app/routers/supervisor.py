@@ -647,3 +647,67 @@ async def review_experience(
     exp.supervisor_reviewed_at = datetime.utcnow()
     db.commit()
     return {"success": True, "message": "ตรวจประสบการณ์สำเร็จ"}
+
+# ==================== โปรไฟล์พี่เลี้ยง ====================
+
+@router.get("/profile", summary="ดูโปรไฟล์พี่เลี้ยง + ข้อมูลบริษัท")
+async def get_supervisor_profile(db: Session = Depends(get_db), user: User = Depends(supervisor_only)):
+    from app.models.user import Company
+
+    # ข้อมูลบริษัท
+    company_data = None
+    if user.company_id:
+        company = db.query(Company).filter(Company.id == user.company_id).first()
+        if company:
+            company_data = {
+                "id": company.id,
+                "name_th": company.name_th,
+                "name_en": company.name_en,
+                "phone": company.phone,
+                "email": company.email,
+                "description": company.description,
+            }
+
+    return {
+        "id": user.id,
+        "prefix_th": user.prefix_th,
+        "first_name_th": user.first_name_th,
+        "last_name_th": user.last_name_th,
+        "email": user.email,
+        "phone": user.phone,
+        "position": user.position,
+        "photo_url": user.photo_url,
+        "company_id": user.company_id,
+        "company": company_data,
+    }
+
+
+@router.put("/profile", summary="แก้ไขโปรไฟล์พี่เลี้ยง")
+async def update_supervisor_profile(
+    phone: Optional[str] = None,
+    email: Optional[str] = None,
+    position: Optional[str] = None,
+    photo_url: Optional[str] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(supervisor_only),
+):
+    if phone is not None: user.phone = phone
+    if email is not None: user.email = email
+    if position is not None: user.position = position
+    if photo_url is not None: user.photo_url = photo_url
+    db.commit()
+    return {"success": True, "message": "อัปเดตโปรไฟล์สำเร็จ"}
+
+
+@router.post("/profile/upload-photo", summary="อัปโหลดรูปโปรไฟล์พี่เลี้ยง")
+async def upload_supervisor_photo(
+    data: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(supervisor_only),
+):
+    photo_url = data.get("photo_url")
+    if not photo_url:
+        raise HTTPException(400, "ไม่มีข้อมูลรูปภาพ")
+    user.photo_url = photo_url
+    db.commit()
+    return {"success": True, "message": "อัปโหลดรูปสำเร็จ"}
