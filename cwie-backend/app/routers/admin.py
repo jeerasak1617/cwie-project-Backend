@@ -137,6 +137,26 @@ async def approve_user(user_id: int, db: Session = Depends(get_db), admin: User 
     return {"success": True, "message": f"อนุมัติ {user.first_name_th} {user.last_name_th} สำเร็จ"}
 
 
+@router.put("/users/{user_id}", summary="แก้ไขข้อมูล User (กำหนดบริษัท/สาขา)")
+async def update_user(
+    user_id: int,
+    data: dict,
+    db: Session = Depends(get_db),
+    admin: User = Depends(admin_only),
+):
+    user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
+    if not user:
+        raise HTTPException(404, "ไม่พบผู้ใช้งาน")
+    if "company_id" in data and data["company_id"]:
+        user.company_id = int(data["company_id"])
+    if "department_id" in data and data["department_id"]:
+        user.department_id = int(data["department_id"])
+    if "position" in data:
+        user.position = data["position"]
+    db.commit()
+    return {"success": True, "message": "อัปเดตข้อมูลสำเร็จ"}
+
+
 @router.post("/users/{user_id}/reject", summary="ปฏิเสธ User")
 async def reject_user(
     user_id: int,
@@ -445,3 +465,20 @@ async def get_admin_evaluations(internship_id: int, db: Session = Depends(get_db
             "comment": e.overall_comment,
         }
     return {"evaluations": result}
+@router.put("/internships/{internship_id}/assign", summary="assign")
+async def assign_internship(
+    internship_id: int,
+    data: dict,
+    db: Session = Depends(get_db),
+    admin: User = Depends(admin_only),
+):
+    from app.models.user import Internship
+    internship = db.query(Internship).filter(Internship.id == internship_id).first()
+    if not internship:
+        raise HTTPException(404, "not found")
+    if "user_adv_id" in data and data["user_adv_id"]:
+        internship.user_adv_id = int(data["user_adv_id"])
+    if "user_sup_id" in data and data["user_sup_id"]:
+        internship.user_sup_id = int(data["user_sup_id"])
+    db.commit()
+    return {"success": True, "message": "ok"}

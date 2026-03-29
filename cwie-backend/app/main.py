@@ -6,7 +6,11 @@ CWIE System - Main Application
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
+from app.core.database import engine, Base
 from app.routers import auth, admin, student, advisor, supervisor, master_data
+
+# Import models เพื่อให้ SQLAlchemy รู้จักทุกตาราง
+from app.models import user as _models  # noqa: F401
 
 app = FastAPI(
     title="CWIE System API",
@@ -31,6 +35,14 @@ app.include_router(student.router, prefix=settings.API_PREFIX)
 app.include_router(advisor.router, prefix=settings.API_PREFIX)
 app.include_router(supervisor.router, prefix=settings.API_PREFIX)
 app.include_router(master_data.router, prefix=settings.API_PREFIX)
+
+
+@app.on_event("startup")
+async def startup_event():
+    """สร้างตารางทั้งหมดอัตโนมัติเมื่อ server เริ่มทำงาน"""
+    print("🔧 กำลังตรวจสอบและสร้างตารางที่ขาด...")
+    Base.metadata.create_all(bind=engine)
+    print("✅ ตารางพร้อมใช้งาน")
 
 
 @app.get("/", tags=["Health"])
