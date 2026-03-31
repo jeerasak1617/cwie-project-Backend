@@ -234,13 +234,16 @@ async def create_semester(
     if not term or not year:
         raise HTTPException(400, "กรุณาระบุ term และ year")
 
+    term = int(term)
+    year = int(year)
+
     existing = db.query(Semester).filter(Semester.term == term, Semester.year == year).first()
     if existing:
         raise HTTPException(400, f"ภาคเรียน {term}/{year} มีอยู่แล้ว")
 
     sem = Semester(
-        term=int(term),
-        year=int(year),
+        term=term,
+        year=year,
         start_date=dt_date.fromisoformat(data["start_date"]) if data.get("start_date") else None,
         end_date=dt_date.fromisoformat(data["end_date"]) if data.get("end_date") else None,
         internship_start=dt_date.fromisoformat(data["internship_start"]) if data.get("internship_start") else None,
@@ -482,3 +485,118 @@ async def assign_internship(
         internship.user_sup_id = int(data["user_sup_id"])
     db.commit()
     return {"success": True, "message": "ok"}
+
+
+# ==================== จัดการการฝึกงาน (ใหม่) ====================
+
+@router.get("/internships/{internship_id}", summary="ดูรายละเอียดการฝึกงานของนักศึกษา")
+async def get_internship_detail(internship_id: int, db: Session = Depends(get_db), admin: User = Depends(admin_only)):
+    from app.models.user import Internship, Company, AttendanceRecord, DailyLog, InternshipExperience, Evaluation, Semester
+    from sqlalchemy import func as sqlfunc
+
+    internship = db.query(Internship).filter(Internship.id == internship_id).first()
+    if not internship:
+        raise HTTPException(404, "ไม่พบข้อมูลการฝึกงาน")
+
+    student = db.query(User).filter(User.id == internship.user_std_id).first()
+    advisor = db.query(User).filter(User.id == internship.user_adv_id).first() if internship.user_adv_id else None
+    supervisor = db.query(User).filter(User.id == internship.user_sup_id).first() if internship.user_sup_id else None
+    company = db.query(Company).filter(Company.id == internship.company_id).first() if internship.company_id else None
+    semester = db.query(Semester).filter(Semester.id == internship.semester_id).first() if internship.semester_id else None
+
+    # ชั่วโมงจริง
+    actual_hours = float(db.query(sqlfunc.coalesce(sqlfunc.sum(AttendanceRecord.hours_worked), 0)).filter(
+        AttendanceRecord.internship_id == internship_id
+    ).scalar() or 0)
+
+    # นับต่างๆ
+    total_attendance = db.query(AttendanceRecord).filter(AttendanceRecord.internship_id == internship_id).count()
+    total_logs = db.query(DailyLog).filter(DailyLog.internship_id == internship_id).count()
+    total_experiences = db.query(InternshipExperience).filter(InternshipExperience.internship_id == internship_id).count()
+    total_evaluations = db.query(Evaluation).filter(Evaluation.internship_id == internship_id).count()
+
+    return {
+        "internship": {
+            "id": internship.id,
+            "internship_code": internship.internship_code,
+            "start_date": internship.start_date.isoformat() if internship.start_date else None,
+            "end_date": internship.end_date.isoformat() if internship.end_date else None,
+            "required_hours": internship.required_hours,
+            "completed_hours": actual_hours,
+            "job_title": internship.job_title,
+            "department": internship.department,
+            "status_id": internship.status_id,
+            "cancellation_reason": internship.cancellation_reason,
+            "remarks": internship.remarks,
+            "semester": f"เทอม {semester.term}/{semester.year}" if semester else None,
+        },
+        "student": {
+            "id": student.id,
+            "student_code": student.student_code,
+            "full_name": f"{student.prefix_th or ''} {student.first_name_th} {student.last_name_th}".strip(),
+            "email": student.email,
+            "phone": student.phone or student.mobile,
+            "department_id": student.department_id,
+            "gpa": float(student.gpa) if student.gpa else None,
+        } if student else None,
+        "advisor": {
+            "id": advisor.id,
+            "full_name": f"{advisor.prefix_th or ''} {advisor.first_name_th} {advisor.last_name_th}".strip(),
+        } if advisor else None,
+        "supervisor": {
+            "id": supervisor.id,
+            "full_name": f"{supervisor.prefix_th or ''} {supervisor.first_name_th} {supervisor.last_name_th}".strip(),
+        } if supervisor else None,
+        "company": {
+            "id": company.id,
+            "name_th": company.name_th,
+        } if company else None,
+        "summary": {
+            "total_attendance_days": total_attendance,
+            "total_daily_logs": total_logs,
+            "total_experiences": total_experiences,
+            "total_evaluations": total_evaluations,
+        },
+    }
+
+
+@router.post("/internships/{internship_id}/cancel", summary="ยกเลิกการฝึกงาน + ลบข้อมูลทั้งหมด")
+async def cancel_internship(
+    internship_id: int,
+    data: dict,
+    db: Session = Depends(get_db),
+    admin: User = Depends(admin_only),
+):
+    from app.models.user import (
+        Internship, InternshipStatus, AttendanceRecord, DailyLog,
+        InternshipExperience, InternshipPlan, OffSiteRecord, LeaveRequest,
+        MonthlySummary, Evaluation
+    )
+    internship = db.query(Internship).filter(Internship.id == internship_id).first()
+    if not internship:
+        raise HTTPException(404, "ไม่พบข้อมูลการฝึกงาน")
+
+    reason = data.get("reason", "ยกเลิกโดย Admin")
+
+    # ลบข้อมูลที่เกี่ยวข้องทั้งหมด
+    db.query(AttendanceRecord).filter(AttendanceRecord.internship_id == internship_id).delete()
+    db.query(DailyLog).filter(DailyLog.internship_id == internship_id).delete()
+    db.query(InternshipExperience).filter(InternshipExperience.internship_id == internship_id).delete()
+    db.query(InternshipPlan).filter(InternshipPlan.internship_id == internship_id).delete()
+    db.query(OffSiteRecord).filter(OffSiteRecord.internship_id == internship_id).delete()
+    db.query(LeaveRequest).filter(LeaveRequest.internship_id == internship_id).delete()
+    db.query(MonthlySummary).filter(MonthlySummary.internship_id == internship_id).delete()
+    db.query(Evaluation).filter(Evaluation.internship_id == internship_id).delete()
+
+    # ลบ internship
+    student_id = internship.user_std_id
+    db.delete(internship)
+    db.commit()
+
+    return {
+        "success": True,
+        "student_id": student_id,
+        "message": f"ยกเลิกการฝึกงานและลบข้อมูลทั้งหมดสำเร็จ เหตุผล: {reason}",
+    }
+
+

@@ -70,6 +70,8 @@ async def list_semesters(db: Session = Depends(get_db)):
             "id": s.id, "year": s.year, "term": s.term, "is_current": s.is_current,
             "start_date": s.start_date.isoformat() if s.start_date else None,
             "end_date": s.end_date.isoformat() if s.end_date else None,
+            "internship_start": s.internship_start.isoformat() if s.internship_start else None,
+            "internship_end": s.internship_end.isoformat() if s.internship_end else None,
             "registration_start": s.registration_start.isoformat() if s.registration_start else None,
             "registration_end": s.registration_end.isoformat() if s.registration_end else None,
         }

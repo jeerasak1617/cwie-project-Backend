@@ -799,7 +799,7 @@ async def create_off_site_request(
         ret_time = time_type(int(parts[0]), int(parts[1]))
 
     record = OffSiteRecord(
-        attendance_id=attendance_id or 0,
+        attendance_id=attendance_id,
         internship_id=internship.id,
         user_std_id=user.id,
         off_site_date=parsed_date,
@@ -873,21 +873,33 @@ async def update_internship_info(
 async def create_internship(
     company_id: int,
     semester_id: int,
-    start_date: str,
-    end_date: str,
     job_title: Optional[str] = None,
     required_hours: int = 450,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     db: Session = Depends(get_db),
     user: User = Depends(student_only),
 ):
-    """สร้างข้อมูลการฝึกงานใหม่สำหรับนักศึกษา"""
-    # เช็คว่ามี internship อยู่แล้วในภาคเรียนนี้ไหม
+    """สร้างข้อมูลการฝึกงานใหม่ — ดึงวันที่ฝึกจาก Semester อัตโนมัติ"""
+    # เช็คว่ามี internship อยู่แล้วไหม (ไม่จำกัดภาคเรียน เพราะถ้ายกเลิกแล้วจะลบไป)
     existing = db.query(Internship).filter(
         Internship.user_std_id == user.id,
-        Internship.semester_id == semester_id,
     ).first()
     if existing:
-        raise HTTPException(409, "มีข้อมูลฝึกงานในภาคเรียนนี้แล้ว")
+        raise HTTPException(409, "มีข้อมูลฝึกงานอยู่แล้ว หากต้องการสร้างใหม่ กรุณาติดต่อ Admin เพื่อยกเลิกของเดิมก่อน")
+
+    # ดึงวันที่ฝึกจาก Semester
+    from app.models.user import Semester
+    semester = db.query(Semester).filter(Semester.id == semester_id).first()
+    if not semester:
+        raise HTTPException(404, "ไม่พบภาคเรียนที่เลือก")
+
+    # ใช้ internship_start/end จาก semester ถ้าไม่ได้ส่งมา
+    final_start = date.fromisoformat(start_date) if start_date else (semester.internship_start or semester.start_date)
+    final_end = date.fromisoformat(end_date) if end_date else (semester.internship_end or semester.end_date)
+
+    if not final_start or not final_end:
+        raise HTTPException(400, "ภาคเรียนนี้ยังไม่มีข้อมูลวันที่ฝึกงาน กรุณาติดต่อ Admin")
 
     # สร้าง internship code อัตโนมัติ
     import random
@@ -897,10 +909,11 @@ async def create_internship(
     internship = Internship(
         internship_code=code,
         user_std_id=user.id,
+        user_adv_id=user.advisor_user_id,
         company_id=company_id,
         semester_id=semester_id,
-        start_date=date.fromisoformat(start_date),
-        end_date=date.fromisoformat(end_date),
+        start_date=final_start,
+        end_date=final_end,
         required_hours=required_hours,
         completed_hours=0,
         job_title=job_title,
@@ -912,5 +925,7 @@ async def create_internship(
         "success": True,
         "id": internship.id,
         "internship_code": internship.internship_code,
+        "start_date": final_start.isoformat(),
+        "end_date": final_end.isoformat(),
         "message": "สร้างข้อมูลการฝึกงานสำเร็จ",
     }

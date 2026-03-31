@@ -25,10 +25,9 @@ router = APIRouter(prefix="/supervisor", tags=["🏢 พี่เลี้ยง
 supervisor_only = require_roles(["supervisor"])
 
 
-# ==================== Helper: คำนวณชั่วโมงจริงจาก attendance ====================
+# ==================== Helper: คำนวณชั่วโมงจริง ====================
 
 def _calc_actual_hours(db: Session, internship_id: int) -> float:
-    """คำนวณชั่วโมงสะสมจริงจาก attendance_records"""
     result = db.query(func.coalesce(func.sum(AttendanceRecord.hours_worked), 0)).filter(
         AttendanceRecord.internship_id == internship_id
     ).scalar()
@@ -39,23 +38,19 @@ def _calc_actual_hours(db: Session, internship_id: int) -> float:
 
 @router.get("/unassigned-students", summary="นักศึกษาในบริษัทเดียวกันที่ยังไม่มีพี่เลี้ยง")
 async def list_unassigned_students(db: Session = Depends(get_db), user: User = Depends(supervisor_only)):
-    """ดึงรายชื่อ internship ในบริษัทเดียวกันที่ยังไม่มี supervisor"""
     if not user.company_id:
         return {"students": []}
-
     internships = db.query(Internship).filter(
         Internship.company_id == user.company_id,
         Internship.user_sup_id.is_(None),
     ).all()
-
     result = []
     for i in internships:
         student = db.query(User).filter(User.id == i.user_std_id).first()
         if not student:
             continue
         result.append({
-            "internship_id": i.id,
-            "student_id": student.id,
+            "internship_id": i.id, "student_id": student.id,
             "student_code": student.student_code,
             "full_name": f"{student.first_name_th} {student.last_name_th}",
             "email": student.email,
@@ -66,27 +61,68 @@ async def list_unassigned_students(db: Session = Depends(get_db), user: User = D
 
 
 @router.post("/assign-student", summary="เพิ่มนักศึกษาเข้าดูแล")
-async def assign_student(
-    internship_id: int,
-    db: Session = Depends(get_db),
-    user: User = Depends(supervisor_only),
-):
-    """บริษัทเลือกรับนักศึกษาเข้าดูแล — ผูก user_sup_id เข้ากับ internship"""
+async def assign_student(internship_id: int, db: Session = Depends(get_db), user: User = Depends(supervisor_only)):
     if not user.company_id:
         raise HTTPException(400, "ผู้ใช้ไม่ได้ผูกกับบริษัท")
-
     internship = db.query(Internship).filter(
-        Internship.id == internship_id,
-        Internship.company_id == user.company_id,
+        Internship.id == internship_id, Internship.company_id == user.company_id,
     ).first()
     if not internship:
         raise HTTPException(404, "ไม่พบข้อมูลการฝึกงานในบริษัทนี้")
     if internship.user_sup_id is not None and internship.user_sup_id != user.id:
         raise HTTPException(409, "นักศึกษาคนนี้มีพี่เลี้ยงดูแลแล้ว")
-
     internship.user_sup_id = user.id
     db.commit()
     return {"success": True, "message": "เพิ่มนักศึกษาเข้าดูแลสำเร็จ"}
+
+
+# ==================== รายละเอียดนักศึกษา ====================
+
+@router.get("/students/{internship_id}", summary="ดูรายละเอียดนักศึกษา")
+async def get_student_detail(internship_id: int, db: Session = Depends(get_db), user: User = Depends(supervisor_only)):
+    internship = db.query(Internship).filter(
+        Internship.id == internship_id, Internship.user_sup_id == user.id
+    ).first()
+    if not internship:
+        raise HTTPException(404, "ไม่พบข้อมูลหรือไม่ใช่นักศึกษาที่ดูแล")
+    student = db.query(User).filter(User.id == internship.user_std_id).first()
+    company_name = None
+    if internship.company_id:
+        company = db.query(Company).filter(Company.id == internship.company_id).first()
+        if company:
+            company_name = company.name_th or company.name_en
+    semester_label = None
+    if internship.semester_id:
+        from app.models.user import Semester
+        sem = db.query(Semester).filter(Semester.id == internship.semester_id).first()
+        if sem:
+            semester_label = f"เทอม {sem.term}/{sem.year}"
+    actual_hours = _calc_actual_hours(db, internship.id)
+    total_logs = db.query(DailyLog).filter(DailyLog.internship_id == internship_id).count()
+    reviewed_logs = db.query(DailyLog).filter(
+        DailyLog.internship_id == internship_id, DailyLog.supervisor_comment.isnot(None)
+    ).count()
+    total_attendance = db.query(AttendanceRecord).filter(AttendanceRecord.internship_id == internship_id).count()
+    return {
+        "internship": {
+            "id": internship.id, "internship_code": internship.internship_code,
+            "start_date": internship.start_date.isoformat() if internship.start_date else None,
+            "end_date": internship.end_date.isoformat() if internship.end_date else None,
+            "required_hours": internship.required_hours, "completed_hours": actual_hours,
+            "company_id": internship.company_id, "company_name": company_name,
+            "job_title": internship.job_title, "semester": semester_label,
+            "remarks": internship.remarks,
+        },
+        "student": {
+            "id": student.id, "student_code": student.student_code,
+            "full_name": f"{student.first_name_th} {student.last_name_th}",
+            "email": student.email, "phone": student.phone or student.mobile,
+        } if student else None,
+        "summary": {
+            "total_daily_logs": total_logs, "reviewed_daily_logs": reviewed_logs,
+            "total_attendance_days": total_attendance,
+        },
+    }
 
 
 # ==================== Dashboard ====================
@@ -139,9 +175,6 @@ async def list_students(db: Session = Depends(get_db), user: User = Depends(supe
             if sem:
                 semester_label = f"เทอม {sem.term}/{sem.year}"
 
-        # ดึงชั่วโมงจริงจาก attendance_records
-        actual_hours = _calc_actual_hours(db, i.id)
-
         result.append({
             "internship_id": i.id,
             "student_id": student.id,
@@ -151,79 +184,11 @@ async def list_students(db: Session = Depends(get_db), user: User = Depends(supe
             "department": i.department,
             "start_date": i.start_date.isoformat() if i.start_date else None,
             "end_date": i.end_date.isoformat() if i.end_date else None,
-            "completed_hours": actual_hours,
+            "completed_hours": _calc_actual_hours(db, i.id),
             "required_hours": i.required_hours,
             "semester": semester_label,
         })
     return {"students": result}
-
-
-# ==================== รายละเอียดนักศึกษา (สำหรับหน้าตรวจประสบการณ์) ====================
-
-@router.get("/students/{internship_id}", summary="ดูรายละเอียดนักศึกษา")
-async def get_student_detail(internship_id: int, db: Session = Depends(get_db), user: User = Depends(supervisor_only)):
-    """ดึงข้อมูลนักศึกษา + internship + สรุป สำหรับหน้าตรวจประสบการณ์"""
-    internship = db.query(Internship).filter(
-        Internship.id == internship_id, Internship.user_sup_id == user.id
-    ).first()
-    if not internship:
-        raise HTTPException(404, "ไม่พบข้อมูลหรือไม่ใช่นักศึกษาที่ดูแล")
-
-    student = db.query(User).filter(User.id == internship.user_std_id).first()
-
-    # ดึงชื่อบริษัท
-    company_name = None
-    if internship.company_id:
-        company = db.query(Company).filter(Company.id == internship.company_id).first()
-        if company:
-            company_name = company.name_th or company.name_en
-
-    # ดึง semester
-    semester_label = None
-    if internship.semester_id:
-        from app.models.user import Semester
-        sem = db.query(Semester).filter(Semester.id == internship.semester_id).first()
-        if sem:
-            semester_label = f"เทอม {sem.term}/{sem.year}"
-
-    # คำนวณชั่วโมงจริง
-    actual_hours = _calc_actual_hours(db, internship.id)
-
-    # สรุปจำนวน
-    total_logs = db.query(DailyLog).filter(DailyLog.internship_id == internship_id).count()
-    reviewed_logs = db.query(DailyLog).filter(
-        DailyLog.internship_id == internship_id, DailyLog.supervisor_comment.isnot(None)
-    ).count()
-    total_attendance = db.query(AttendanceRecord).filter(
-        AttendanceRecord.internship_id == internship_id
-    ).count()
-
-    return {
-        "internship": {
-            "id": internship.id,
-            "internship_code": internship.internship_code,
-            "start_date": internship.start_date.isoformat() if internship.start_date else None,
-            "end_date": internship.end_date.isoformat() if internship.end_date else None,
-            "required_hours": internship.required_hours,
-            "completed_hours": actual_hours,
-            "company_id": internship.company_id,
-            "company_name": company_name,
-            "job_title": internship.job_title,
-            "semester": semester_label,
-        },
-        "student": {
-            "id": student.id,
-            "student_code": student.student_code,
-            "full_name": f"{student.first_name_th} {student.last_name_th}",
-            "email": student.email,
-            "phone": student.phone or student.mobile,
-        } if student else None,
-        "summary": {
-            "total_daily_logs": total_logs,
-            "reviewed_daily_logs": reviewed_logs,
-            "total_attendance_days": total_attendance,
-        },
-    }
 
 
 # ==================== ตรวจบันทึกรายวัน ====================
@@ -787,6 +752,8 @@ async def review_experience(
 
 @router.get("/profile", summary="ดูโปรไฟล์พี่เลี้ยง + ข้อมูลบริษัท")
 async def get_supervisor_profile(db: Session = Depends(get_db), user: User = Depends(supervisor_only)):
+    from app.models.user import Company
+
     # ข้อมูลบริษัท
     company_data = None
     if user.company_id:

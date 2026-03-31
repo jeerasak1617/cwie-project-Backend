@@ -10,7 +10,7 @@ from datetime import datetime, date
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import extract
+from sqlalchemy import extract, func
 from app.core.database import get_db
 from app.core.security import require_roles
 from app.models.user import (
@@ -23,6 +23,64 @@ from app.models.user import (
 router = APIRouter(prefix="/advisor", tags=["👨‍🏫 อาจารย์นิเทศก์"])
 
 advisor_only = require_roles(["advisor"])
+
+
+# ==================== Helper: คำนวณชั่วโมงจริงจาก attendance ====================
+
+def _calc_actual_hours(db: Session, internship_id: int) -> float:
+    """คำนวณชั่วโมงสะสมจริงจาก attendance_records"""
+    result = db.query(func.coalesce(func.sum(AttendanceRecord.hours_worked), 0)).filter(
+        AttendanceRecord.internship_id == internship_id
+    ).scalar()
+    return float(result or 0)
+
+
+# ==================== นักศึกษาที่ยังไม่มีอาจารย์ ====================
+
+@router.get("/unassigned-students", summary="นักศึกษาที่ยังไม่มีอาจารย์นิเทศ")
+async def list_unassigned_students(db: Session = Depends(get_db), user: User = Depends(advisor_only)):
+    """ดึงรายชื่อ internship ที่ยังไม่มี advisor"""
+    internships = db.query(Internship).filter(
+        Internship.user_adv_id.is_(None),
+    ).all()
+
+    result = []
+    for i in internships:
+        student = db.query(User).filter(User.id == i.user_std_id).first()
+        if not student:
+            continue
+        # กรองเฉพาะนักศึกษาที่อยู่ department เดียวกับอาจารย์ (ถ้ามี)
+        if user.department_id and student.department_id and student.department_id != user.department_id:
+            continue
+        result.append({
+            "internship_id": i.id,
+            "student_id": student.id,
+            "student_code": student.student_code,
+            "full_name": f"{student.first_name_th} {student.last_name_th}",
+            "email": student.email,
+            "department_id": student.department_id,
+            "company_id": i.company_id,
+            "start_date": i.start_date.isoformat() if i.start_date else None,
+        })
+    return {"students": result}
+
+
+@router.post("/assign-student", summary="เพิ่มนักศึกษาเข้าดูแล")
+async def assign_student(
+    internship_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(advisor_only),
+):
+    """อาจารย์เลือกรับนักศึกษาเข้าดูแล"""
+    internship = db.query(Internship).filter(Internship.id == internship_id).first()
+    if not internship:
+        raise HTTPException(404, "ไม่พบข้อมูลการฝึกงาน")
+    if internship.user_adv_id is not None and internship.user_adv_id != user.id:
+        raise HTTPException(409, "นักศึกษาคนนี้มีอาจารย์ดูแลแล้ว")
+
+    internship.user_adv_id = user.id
+    db.commit()
+    return {"success": True, "message": "เพิ่มนักศึกษาเข้าดูแลสำเร็จ"}
 
 
 # ==================== Dashboard ====================
@@ -75,7 +133,7 @@ async def list_students(db: Session = Depends(get_db), user: User = Depends(advi
             "company_id": i.company_id,
             "start_date": i.start_date.isoformat() if i.start_date else None,
             "end_date": i.end_date.isoformat() if i.end_date else None,
-            "completed_hours": float(i.completed_hours or 0),
+            "completed_hours": _calc_actual_hours(db, i.id),
             "required_hours": i.required_hours,
             "status_id": i.status_id,
         })
@@ -122,7 +180,7 @@ async def get_student_detail(internship_id: int, db: Session = Depends(get_db), 
             "start_date": internship.start_date.isoformat() if internship.start_date else None,
             "end_date": internship.end_date.isoformat() if internship.end_date else None,
             "required_hours": internship.required_hours,
-            "completed_hours": float(internship.completed_hours or 0),
+            "completed_hours": _calc_actual_hours(db, internship.id),
             "company_id": internship.company_id,
             "company_name": company_name,
             "job_title": internship.job_title,
@@ -312,6 +370,36 @@ async def list_visit_schedules(db: Session = Depends(get_db), user: User = Depen
             for s in schedules
         ],
     }
+
+
+@router.put("/visit-schedules/{schedule_id}", summary="แก้ไขตารางนิเทศ")
+async def update_visit_schedule(
+    schedule_id: int,
+    scheduled_date: Optional[str] = None,
+    scheduled_time: Optional[str] = None,
+    notes: Optional[str] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(advisor_only),
+):
+    """แก้ไขวันที่ เวลา หมายเหตุของตารางนิเทศ"""
+    schedule = db.query(AdvisorVisitSchedule).filter(
+        AdvisorVisitSchedule.id == schedule_id,
+        AdvisorVisitSchedule.user_adv_id == user.id,
+    ).first()
+    if not schedule:
+        raise HTTPException(404, "ไม่พบตารางนิเทศหรือไม่ใช่ของอาจารย์ท่านนี้")
+
+    if scheduled_date:
+        schedule.scheduled_date = date.fromisoformat(scheduled_date)
+    if scheduled_time:
+        from datetime import time as time_type
+        parts = scheduled_time.split(":")
+        schedule.scheduled_time = time_type(int(parts[0]), int(parts[1]))
+    if notes is not None:
+        schedule.notes = notes
+
+    db.commit()
+    return {"success": True, "message": "แก้ไขตารางนิเทศสำเร็จ"}
 
 
 # ==================== บันทึกผลนิเทศ ====================

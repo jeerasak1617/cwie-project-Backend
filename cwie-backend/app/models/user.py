@@ -679,7 +679,7 @@ class MonthlySummary(Base):
 class OffSiteRecord(Base):
     __tablename__ = "off_site_records"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    attendance_id = Column(Integer, ForeignKey("attendance_records.id"), nullable=False)
+    attendance_id = Column(Integer, ForeignKey("attendance_records.id"), nullable=True)
     internship_id = Column(Integer, ForeignKey("internships.id"), nullable=False)
     user_std_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     off_site_date = Column(Date, nullable=False)
