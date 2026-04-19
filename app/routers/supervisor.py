@@ -844,3 +844,26 @@ async def unsign_experience(
         internship.remarks = None
     db.commit()
     return {"success": True, "message": "ยกเลิกการเซ็นสำเร็จ"}
+@router.get("/students/{internship_id}/family", summary="ดูข้อมูลผู้ปกครองของนักศึกษา")
+async def get_student_family(
+    internship_id: int,
+    db: Session = Depends(get_db),
+    supervisor: User = Depends(supervisor_only),
+):
+    from app.models.user import Internship, UserFamily
+    internship = db.query(Internship).filter(Internship.id == internship_id).first()
+    if not internship:
+        raise HTTPException(404, "ไม่พบข้อมูลการฝึกงาน")
+    families = db.query(UserFamily).filter(UserFamily.user_id == internship.user_std_id).all()
+    return {
+        "families": [
+            {
+                "relation_type": f.relation_type,
+                "first_name": f.first_name or "",
+                "last_name": f.last_name or "",
+                "occupation": f.occupation or "",
+                "phone": f.phone or "",
+            }
+            for f in families
+        ]
+    }
