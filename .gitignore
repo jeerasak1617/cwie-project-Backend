@@ -1,0 +1,10 @@
+﻿.env
+*.env
+__pycache__/
+*.pyc
+cwie-backend/__pycache__/
+cwie-backend/app/__pycache__/
+cwie-backend/app/core/__pycache__/
+cwie-backend/app/models/__pycache__/
+cwie-backend/app/routers/__pycache__/
+cwie-backend/app/services/__pycache__/
